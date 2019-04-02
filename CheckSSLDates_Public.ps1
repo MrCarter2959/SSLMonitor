@@ -46,7 +46,7 @@ $req.Timeout = $timeoutMilliseconds
 
 $req.GetResponse()
 
-[datetime]$expiration = $req.ServicePoint.Certificate.GetExpirationDateString()
+[datetime]$expiration = (Get-Date $req.ServicePoint.Certificate.GetExpirationDateString())
 
 [int]$certExpiresIn = ($expiration - $(get-date)).Days
 #########################################################################
