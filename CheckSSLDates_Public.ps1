@@ -1,116 +1,141 @@
-﻿#########################################################################
+#########################################################################
 #                                                                       #
 #                            URL's to Monitor                           #
 #                                                                       #
 #########################################################################
-$SSL_URL = @(
-'https://website.domain.org',
-'https://website2.domain.org'
+#Use the Format of first URL to include monitor website's to montior
+$sslURL = @(
+'https://url1.domain.org',
+'https://url2.domain.com'
+)
 
-) #Use the Format of first URL to include monitor website's to montior
 #########################################################################
 #                                                                       #
 #                             SMTP Settings                             #
 #                                                                       #
 #########################################################################
-$SSL_To = 'someperson@domain.org'
-$SSL_From = 'fromperson@domain.org'
-$SSL_SMTP = 'SMTP_GATEWAY_URL'
+$sslSMTP = @{
+    SMTPServer = 'SMTP_SERVER'
+    To         = 'TOUSER@DOMAIN.ORG'
+    From       = 'SOMEONE@DOMAIN.ORG'
+    Subject    = '[ALERT] : SSL Certs Exipring Soon!'
+}
+
+#########################################################################
+#                                                                       #
+#                             Set Cert Age                              #
+#                                                                       #
+#########################################################################
+$sslMinimumCertAgeDays = 30 # Enter how many days left on the certificate before considering this monitor 'down'
+
+$sslTimeoutMilliseconds = 30000
+
+#########################################################################
+#                                                                       #
+#                             Set HTML                                  #
+#                                                                       #
+#########################################################################
+$sslHTML = @"
+<style>
+BODY{background-color:white;}
+TABLE{border-width: 1px;border-style: solid;border-color: black;border-collapse: collapse;}
+TH{border-width: 1px;padding: 0px;border-style: solid;border-color: black;background-color:thistle}
+TD{border-width: 1px;padding: 0px;border-style: solid;border-color: black;background-color:white}
+</style>
+"@
+
+#########################################################################
+#                                                                       #
+#                            Create Error Array's                       #
+#                                                                       #
+#########################################################################
+$sslDebug = New-Object System.Collections.Generic.List[object]
+
 #########################################################################
 #                                                                       #
 #                            Create Array's                             #
 #                                                                       #
 #########################################################################
-$CurrentSSL = @()
-$ExpiringSSL = @()
+$sslCurrent = New-Object System.Collections.Generic.List[object]
+$sslExpiring = New-Object System.Collections.Generic.List[object]
 #########################################################################
 #                                                                       #
 #                       Start the SSL Check                             #
 #                                                                       #
 #########################################################################
-Foreach ($site in $SSL_URL) {
+Foreach ($site in $sslURL) {
 
-$minimumCertAgeDays = 30 # Enter how many days left on the certificate before considering this monitor 'down'
+Try {
+    [Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
 
-$timeoutMilliseconds = 30000
+    $sslReq = [Net.HttpWebRequest]::Create($site)
 
-$minimumCertAgeDays = 30 #Enter how many days left on the certificate before considering this monitor 'down'
+    $sslReq.Timeout = $sslTimeoutMilliseconds
 
-$timeoutMilliseconds = 30000
+    $sslReq.GetResponse() | Out-Null
+}
+Catch {
+    ##################################
+    # Set Error Variable
+    $sslTransferErrors = $_.Exception.Message
+    $sslFullError = $_.InvocationInfo.PositionMessage
+    $sslErrorInfo = $_.CategoryInfo.ToString()
+    $sslFQDNError = $_.FullyQualifiedErrorId
+    ##################################
+    # Write To Console
+    Write-Host $sslTransferErrors -BackgroundColor "Yellow" -ForegroundColor "Black"
+    ##################################
+    # Write To ArrayLog
+    $sslDebug.Add(
+        [PSCUSTOMOBJECT]@{ErrorMessage=$sslTransferErrors;FullError=$sslFullError;ErrorInfo=$sslErrorInfo;ErrorID=$sslFQDNError}
+    )
+}
 
-[Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
+[datetime]$sslExpiration = (Get-Date $sslReq.ServicePoint.Certificate.GetExpirationDateString())
 
-$req = [Net.HttpWebRequest]::Create($site)
-
-$req.Timeout = $timeoutMilliseconds
-
-$req.GetResponse()
-
-[datetime]$expiration = (Get-Date $req.ServicePoint.Certificate.GetExpirationDateString())
-
-[int]$certExpiresIn = ($expiration - $(get-date)).Days
+[int]$sslCertExpiresIn = ($sslExpiration - $(get-date)).Days
 #########################################################################
 #                                                                       #
 #                      Check for Date Range                             #
 #                                                                       #
 #########################################################################
+if ($sslCertExpiresIn -gt $sslMinimumCertAgeDays) {
+    Write-Host "Cert for site $site expires in $sslCertExpiresIn days [on $sslExpiration]" -BackgroundColor "Green" -ForegroundColor "Black"
 
-    if ($certExpiresIn -gt $minimumCertAgeDays){
-    "Cert for site $site expires in $certExpiresIn days [on $expiration]"
+    $sslCurrent.Add(
+        [PSCUSTOMOBJECT] @{
+            URL=$site;DaysToExpiration=$sslCertExpiresIn;ExpirationDate=$sslExpiration
+        }
+    )
 
-    $Current = @"
-    URL,DaysToExpiration,ExpirationDate
-    "",""
-    $site,$certExpiresIn,$expiration
-"@ | ConvertFrom-Csv
-    $CurrentSSL += $Current
+    $sslCurrentBody = $sslCurrent | ConvertTo-Html -Head $sslHTML -Body "<H2>Current SSL Certificates</H2>" | Out-String
+    $sslSMTP.body = $sslCurrentBody
 
-    ###############
-    #  HTML Chart #
-    ###############
-    $SSL_s = "<style>"
-    $SSL_s = $SSL_s + "BODY{background-color:white;}"
-    $SSL_s = $SSL_s + "TABLE{border-width: 1px;border-style: solid;border-color: black;border-collapse: collapse;}"
-    $SSL_s = $SSL_s + "TH{border-width: 1px;padding: 0px;border-style: solid;border-color: black;background-color:thistle}"
-    $SSL_s = $SSL_s + "TD{border-width: 1px;padding: 0px;border-style: solid;border-color: black;background-color:palegoldenrod}"
-    $SSL_s = $SSL_s + "</style>"
-    $SSL_Body = $CurrentSSL | ConvertTo-Html -Head $SSL_s -Body "<H2>Current SSL Certificates</H2>" | Out-String
     }
+Else {
+    Write-Host "Cert for site $site expires in $sslCertExpiresIn days [on $sslExpiration] Threshold is $sslMinimumCertAgeDays days." -BackgroundColor "Yellow" -ForegroundColor "Black"
 
-else
+    $sslExpiring.Add(
+        [PSCUSTOMOBJET]@{
+            URL=$site;DaysToExpiration=$sslCertExpiresIn;ExpirationDate=$sslExpiration
+        }
+    )
+   
+    $sslExpiringBody = $sslExpiring | ConvertTo-Html -Head $sslHTML -Body "<H2>Expiring SSL Certificates</H2>" | Out-String
 
-    {
-
-    "Cert for site $site expires in $certExpiresIn days [on $expiration] Threshold is $minimumCertAgeDays days."
-
-    $Expiring = @"
-    URL,DaysToExpiration,ExpirationDate
-    "",""
-    $site,$certExpiresIn,$expiration
-"@ | ConvertFrom-Csv
-    $ExpiringSSL += $Expiring
-
-
-    ##############
-    # HTML Chart #
-    ##############
-    $SSL_s = "<style>"
-    $SSL_s = $SSL_s + "BODY{background-color:white;}"
-    $SSL_s = $SSL_s + "TABLE{border-width: 1px;border-style: solid;border-color: black;border-collapse: collapse;}"
-    $SSL_s = $SSL_s + "TH{border-width: 1px;padding: 0px;border-style: solid;border-color: black;background-color:thistle}"
-    $SSL_s = $SSL_s + "TD{border-width: 1px;padding: 0px;border-style: solid;border-color: black;background-color:palegoldenrod}"
-    $SSL_s = $SSL_s + "</style>"
-    $SSL_Body = $ExpiringSSL | ConvertTo-Html -Head $SSL_s -Body "<H2>Expiring SSL Certificates</H2>" | Out-String
+    $sslSMTP.body = $sslExpiringBody
+    }
 }
-}
+
+
 #########################################################################
 #                                                                       #
 #                    Send SMTP Notification                             #
 #                                                                       #
 #########################################################################
-#if ($CurrentSSL.Count -gt 1){
+#if ($sslCurrent.Count -ge 1){
 #
-#    Send-MailMessage -SmtpServer $SSL_SMTP -To $SSL_To -From $SSL_From -Subject 'Current SSL Info' -Body $SSL_Body -BodyAsHtml
+#    Send-MailMessage @sslSMTP -BodyAsHtml
 #
 #    }
 #########################################################################
@@ -118,8 +143,8 @@ else
 #                    Send SMTP Notification                             #
 #                                                                       #
 #########################################################################
-If ($ExpiringSSL.Count -gt 1) {
+If ($sslExpiring.Count -ge 1) {
     
-    Send-MailMessage -SmtpServer $SSL_SMTP -To $SSL_To -From $SSL_From -Subject 'Expiring SSL Certificates' -Body $SSL_Body -BodyAsHtml
+    Send-MailMessage @sslSMTP -BodyAsHtml
     
     }
